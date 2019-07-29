@@ -1,0 +1,9 @@
+<header>
+    <button (click)="login()" *ngIf="!isAuthenticated">Log In</button>
+    <button (click)="logout()" *ngIf="isAuthenticated">Log Out</button>
+    <a [routerLink]="['']">Home</a>&nbsp;
+    <a [routerLink]="['profile']" *ngIf="isAuthenticated">Profile</a>
+
+    <button (click)="callApi()" *ngIf="isAuthenticated">Call localhost:5001/api/user</button>
+    <button (click)="callApi()">Call localhost:5001/api/test</button>
+  </header>
