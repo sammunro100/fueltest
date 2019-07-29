@@ -7,11 +7,10 @@ import { AuthService } from '../auth.service';
   styleUrls: ['./profile.component.scss']
 })
 export class ProfileComponent implements OnInit {
-  profile: any;
 
-  constructor(private authService: AuthService) {}
+  constructor(public auth: AuthService) { }
 
   ngOnInit() {
-    this.authService.profile.subscribe(profile => (this.profile = profile));
   }
+
 }

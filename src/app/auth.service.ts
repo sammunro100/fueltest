@@ -1,46 +1,234 @@
 import { Injectable } from '@angular/core';
 import createAuth0Client from '@auth0/auth0-spa-js';
 import Auth0Client from '@auth0/auth0-spa-js/dist/typings/Auth0Client';
-import { BehaviorSubject } from 'rxjs';
+import { from, of, Observable, BehaviorSubject, combineLatest, throwError } from 'rxjs';
+import { tap, catchError, concatMap, shareReplay } from 'rxjs/operators';
+import { Router } from '@angular/router';
 
 @Injectable({
   providedIn: 'root'
 })
 export class AuthService {
-  isAuthenticated = new BehaviorSubject(false);
-  profile = new BehaviorSubject<any>(null);
-
-  private auth0Client: Auth0Client;
-
-  // Auth0 application configuration
-  config = {
+  // Create an observable of Auth0 instance of client
+  auth0Client$ = (from(
+    createAuth0Client({
     domain: 'localhost4fuel3ddev.eu.auth0.com',
     client_id: 'xW2ig5pajFVWeRdwRP0gcZ19irqyGyYb',
-    redirect_uri: `${window.location.origin}/callback`
-  };
+    redirect_uri: `${window.location.origin}/callback`,
+    // response_type: 'code',
+    // code_challenge: this.verifier,
+    // code_challenge_method: 'S256',
+    // audience: 'localhost4fuel3ddev.eu.auth0.com',
+    })
+  ) as Observable<Auth0Client>).pipe(
+    shareReplay(1), // Every subscription receives the same shared value
+    catchError(err => throwError(err))
+  );
+  // Define observables for SDK methods that return promises by default
+  // For each Auth0 SDK method, first ensure the client instance is ready
+  // concatMap: Using the client instance, call SDK method; SDK returns a promise
+  // from: Convert that resulting promise into an observable
+  isAuthenticated$ = this.auth0Client$.pipe(
+    concatMap((client: Auth0Client) => from(client.isAuthenticated()))
+  );
+  handleRedirectCallback$ = this.auth0Client$.pipe(
+    concatMap((client: Auth0Client) => from(client.handleRedirectCallback()))
+  );
+  // Create subject and public observable of user profile data
+  private userProfileSubject$ = new BehaviorSubject<any>(null);
+  userProfile$ = this.userProfileSubject$.asObservable();
+  // Create a local property for login status
+  loggedIn: boolean = null;
 
-  /**
-   * Gets the Auth0Client instance.
-   */
-  async getAuth0Client(): Promise<Auth0Client> {
-    if (!this.auth0Client) {
-      this.auth0Client = await createAuth0Client(this.config);
-
-      // Provide the current value of isAuthenticated
-      this.isAuthenticated.next(await this.auth0Client.isAuthenticated());
-
-      // Whenever isAuthenticated changes, provide the current value of `getUser`
-      this.isAuthenticated.subscribe(async isAuthenticated => {
-        if (isAuthenticated) {
-          this.profile.next(await this.auth0Client.getUser());
-
-          return;
-        }
-
-        this.profile.next(null);
-      });
-    }
-
-    return this.auth0Client;
+  constructor(private router: Router) { }
+  
+  // getUser$() is a method because options can be passed if desired
+  // https://auth0.github.io/auth0-spa-js/classes/auth0client.html#getuser
+  getUser$(options?): Observable<any> {
+    return this.auth0Client$.pipe(
+      concatMap((client: Auth0Client) => from(client.getUser(options)))
+    );
   }
+
+  localAuthSetup() {
+    // This should only be called on app initialization
+    // Set up local authentication streams
+    const checkAuth$ = this.isAuthenticated$.pipe(
+      concatMap((loggedIn: boolean) => {
+        if (loggedIn) {
+          // If authenticated, get user data
+          return this.getUser$();
+        }
+        // If not authenticated, return stream that emits 'false'
+        return of(loggedIn);
+      })
+    );
+    const checkAuthSub = checkAuth$.subscribe((response: { [key: string]: any } | boolean) => {
+      // If authenticated, response will be user object
+      // If not authenticated, response will be 'false'
+      // Set subjects appropriately
+      if (response) {
+        const user = response;
+        this.userProfileSubject$.next(user);
+      }
+      this.loggedIn = !!response;
+      // Clean up subscription
+      checkAuthSub.unsubscribe();
+    });
+  }
+
+  login(redirectPath: string = '/') {
+    // A desired redirect path can be passed to login method
+    // (e.g., from a route guard)
+    // Ensure Auth0 client instance exists
+    this.auth0Client$.subscribe((client: Auth0Client) => {
+      // Call method to log in
+      client.loginWithRedirect({
+        redirect_uri: `${window.location.origin}/callback`,
+        appState: { target: redirectPath }
+      });
+    });
+  }
+
+  handleAuthCallback() {
+    // Only the callback component should call this method
+    // Call when app reloads after user logs in with Auth0
+    let targetRoute: string; // Path to redirect to after login processsed
+    // Ensure Auth0 client instance exists
+    const authComplete$ = this.auth0Client$.pipe(
+      // Have client, now call method to handle auth callback redirect
+      concatMap(() => this.handleRedirectCallback$),
+      tap(cbRes => {
+        // Get and set target redirect route from callback results
+        targetRoute = cbRes.appState && cbRes.appState.target ? cbRes.appState.target : '/';
+      }),
+      concatMap(() => {
+        // Redirect callback complete; create stream
+        // returning user data and authentication status
+        return combineLatest(
+          this.getUser$(),
+          this.isAuthenticated$
+        );
+      })
+    );
+    // Subscribe to authentication completion observable
+    // Response will be an array of user and login status
+    authComplete$.subscribe(([user, loggedIn]) => {
+      // Update subjects and loggedIn property
+      this.userProfileSubject$.next(user);
+      this.loggedIn = loggedIn;
+      // Redirect to target route after callback processing
+      this.router.navigate([targetRoute]);
+    });
+  }
+
+  logout() {
+    // Ensure Auth0 client instance exists
+    this.auth0Client$.subscribe((client: Auth0Client) => {
+      // Call method to log out
+      client.logout({
+        client_id: "cYeECtlPfcyxrOWGYMMRdrV2pB3vuNXc",
+        returnTo: `${window.location.origin}`
+      });
+    });
+  }
+
 }
+
+
+
+
+// import { Injectable } from '@angular/core';
+// import createAuth0Client from '@auth0/auth0-spa-js';
+// import Auth0Client from '@auth0/auth0-spa-js/dist/typings/Auth0Client';
+// import { BehaviorSubject } from 'rxjs';
+// import * as crypto from 'crypto-browserify';
+// import { HttpClient, HttpHeaders } from '@angular/common/http';
+// @Injectable({
+//   providedIn: 'root'
+// })
+// export class AuthService {
+//   isAuthenticated = new BehaviorSubject(false);
+//   profile = new BehaviorSubject<any>(null);
+//   verifier;
+//   challenge;
+//   private auth0Client: Auth0Client;
+//   headers = new Headers({ 'Content-Type': 'application/json' });
+//   // options = new RequestOptions({ headers: headers });
+//   getTokenSilently$ = this.auth0Client.pipe(
+//     concatMap((client: Auth0Client) => from(client.getTokenSilently()))
+//   );
+//   // Create subject and public observable of access token
+//   private accessTokenSubject$ = new BehaviorSubject<string>(null);
+//   accessToken$ = this.accessTokenSubject$.asObservable();
+
+
+//   constructor(private readonly http: HttpClient) {
+
+//   }
+//   // Auth0 application configuration
+//   config = {
+//     domain: 'localhost4fuel3ddev.eu.auth0.com',
+//     client_id: 'xW2ig5pajFVWeRdwRP0gcZ19irqyGyYb',
+//     redirect_uri: `${window.location.origin}/callback`,
+//     response_type: 'code',
+//     code_challenge: this.verifier,
+//     code_challenge_method: 'S256',
+//     // audience: 'localhost4fuel3ddev.eu.auth0.com',
+//   };
+
+
+//   base64URLEncode(str) {
+//     return str.toString('base64')
+//       .replace(/\+/g, '-')
+//       .replace(/\//g, '_')
+//       .replace(/=/g, '');
+//   }
+
+//   sha256(buffer) {
+//     return crypto.createHash('sha256').update(buffer).digest();
+//   }
+
+//   /**
+//    * Gets the Auth0Client instance.
+//    */
+//   async getAuth0Client(): Promise<Auth0Client> {
+//     this.verifier = this.base64URLEncode(crypto.randomBytes(32));
+//     this.challenge = this.base64URLEncode(this.sha256(this.verifier));
+//     if (!this.auth0Client) {
+//       this.auth0Client = await createAuth0Client(this.config);
+
+//       // Provide the current value of isAuthenticated
+//       this.isAuthenticated.next(await this.auth0Client.isAuthenticated());
+
+//       // Whenever isAuthenticated changes, provide the current value of `getUser`
+//       this.isAuthenticated.subscribe(async isAuthenticated => {
+//         if (isAuthenticated) {
+//           this.profile.next(await this.auth0Client.getUser());
+
+//           return;
+//         }
+
+//         this.profile.next(null);
+//       });
+//     }
+//     console.log(this.auth0Client);
+//     return this.auth0Client;
+//   }
+
+  
+
+
+
+//   getToken() {
+//     this.http.post('localhost4fuel3ddev.eu.auth0.com/oauth/token', {
+//       headers: { 'content-type': 'application/x-www-form-urlencoded' }, params: {
+//         grant_type: 'authorization_code',
+//         client_id: 'xW2ig5pajFVWeRdwRP0gcZ19irqyGyYb',
+//         code_verifier: this.verifier,
+//         code: 'YOUR_AUTHORIZATION_CODE',
+//         redirect_ui: `${window.location.origin}/callback`
+//       }
+//     });
+//   }
+// }
